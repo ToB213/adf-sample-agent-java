@@ -1,4 +1,4 @@
-package sample_team.module.complex;
+package sample_team.module.algorithm;
 
 import adf.core.agent.communication.MessageManager;
 import adf.core.agent.develop.DevelopData;
@@ -57,11 +57,11 @@ public class KMeansClustering extends StaticClustering {
   public KMeansClustering(AgentInfo ai, WorldInfo wi, ScenarioInfo si, ModuleManager moduleManager, DevelopData developData) {
     super(ai, wi, si, moduleManager, developData);
     this.repeatPrecompute = developData.getInteger(
-        "adf.impl.module.algorithm.KMeansClustering.repeatPrecompute", 7);
+        "sample_team.module.algorithm.KMeansClustering.repeatPrecompute", 7);
     this.repeatPreparate = developData.getInteger(
-        "adf.impl.module.algorithm.KMeansClustering.repeatPreparate", 30);
+        "sample_team.module.algorithm.KMeansClustering.repeatPreparate", 30);
     this.clusterSize = developData.getInteger(
-        "adf.impl.module.algorithm.KMeansClustering.clusterSize", 5);
+        "sample_team.module.algorithm.KMeansClustering.clusterSize", 5);
     if (agentInfo.me().getStandardURN()
         .equals(StandardEntityURN.AMBULANCE_TEAM)) {
       this.clusterSize = scenarioInfo.getScenarioAgentsAt();
@@ -73,7 +73,7 @@ public class KMeansClustering extends StaticClustering {
       this.clusterSize = scenarioInfo.getScenarioAgentsPf();
     }
     this.assignAgentsFlag = developData.getBoolean(
-        "adf.impl.module.algorithm.KMeansClustering.assignAgentsFlag", true);
+        "sample_team.module.algorithm.KMeansClustering.assignAgentsFlag", true);
     this.clusterEntityIDsList = new ArrayList<>();
     this.centerIDs = new ArrayList<>();
     this.clusterEntitiesList = new HashMap<>();
@@ -114,6 +114,20 @@ public class KMeansClustering extends StaticClustering {
           this.clusterEntityIDsList.get(i));
     }
     precomputeData.setBoolean(KEY_ASSIGN_AGENT, this.assignAgentsFlag);
+
+    // --- ★ クラスタリング結果を標準出力に出す ---
+    System.out.println("=== KMeansClustering Result ===");
+    System.out.println("Cluster count: " + this.getClusterNumber());
+    for (int i = 0; i < this.getClusterNumber(); i++) {
+        Collection<EntityID> clusterEntities = this.getClusterEntityIDs(i);
+        System.out.println(
+            "[DEBUG] Cluster " + (i + 1)
+            + " | Size: " + clusterEntities.size()
+            + " | Entities: " + clusterEntities
+        );
+    }
+    System.out.println("===============================");
+
     return this;
   }
 
@@ -244,15 +258,8 @@ public class KMeansClustering extends StaticClustering {
           sumX += location.first();
           sumY += location.second();
         }
-        
-        int clusterSize = this.clusterEntitiesList.get(index).size();
-        if (clusterSize == 0) {
-          // Skip this cluster if it's empty to avoid division by zero
-          continue;
-        }
-        
-        int centerX = sumX / clusterSize;
-        int centerY = sumY / clusterSize;
+        int centerX = sumX / this.clusterEntitiesList.get(index).size();
+        int centerY = sumY / this.clusterEntitiesList.get(index).size();
         StandardEntity center = this.getNearEntityByLine(this.worldInfo,
             this.clusterEntitiesList.get(index), centerX, centerY);
         if (center instanceof Area) {
@@ -351,15 +358,8 @@ public class KMeansClustering extends StaticClustering {
           sumX += location.first();
           sumY += location.second();
         }
-        
-        int clusterSize = clusterEntitiesList.get(index).size();
-        if (clusterSize == 0) {
-          // Skip this cluster if it's empty to avoid division by zero
-          continue;
-        }
-        
-        int centerX = sumX / clusterSize;
-        int centerY = sumY / clusterSize;
+        int centerX = sumX / clusterEntitiesList.get(index).size();
+        int centerY = sumY / clusterEntitiesList.get(index).size();
 
         // this.centerList.set(index, getNearEntity(this.worldInfo,
         // this.clusterEntitiesList.get(index), centerX, centerY));
