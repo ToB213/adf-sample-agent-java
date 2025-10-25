@@ -32,7 +32,7 @@ public class SampleBuildingDetector extends BuildingDetector {
     logger = DefaultLogger.getLogger(agentInfo.me());
     this.clustering = moduleManager.getModule(
         "SampleBuildingDetector.Clustering",
-        "adf.impl.module.algorithm.KMeansClustering");
+        "sample_team.module.algorithm.KMeansClustering");
     registerModule(this.clustering);
   }
 

@@ -46,23 +46,23 @@ public class SampleSearch extends Search {
     if (agentURN == AMBULANCE_TEAM) {
       this.pathPlanning = moduleManager.getModule(
           "SampleSearch.PathPlanning.Ambulance",
-          "adf.impl.module.algorithm.DijkstraPathPlanning");
+          "sample_team.module.algorithm.DijkstraPathPlanning");
       this.clustering = moduleManager.getModule(
           "SampleSearch.Clustering.Ambulance",
-          "adf.impl.module.algorithm.KMeansClustering");
+          "sample_team.module.algorithm.KMeansClustering");
     } else if (agentURN == FIRE_BRIGADE) {
       this.pathPlanning = moduleManager.getModule(
           "SampleSearch.PathPlanning.Fire",
-          "adf.impl.module.algorithm.DijkstraPathPlanning");
+          "sample_team.module.algorithm.DijkstraPathPlanning");
       this.clustering = moduleManager.getModule("SampleSearch.Clustering.Fire",
-          "adf.impl.module.algorithm.KMeansClustering");
+          "sample_team.module.algorithm.KMeansClustering");
     } else if (agentURN == POLICE_FORCE) {
       this.pathPlanning = moduleManager.getModule(
           "SampleSearch.PathPlanning.Police",
-          "adf.impl.module.algorithm.DijkstraPathPlanning");
+          "sample_team.module.algorithm.DijkstraPathPlanning");
       this.clustering = moduleManager.getModule(
           "SampleSearch.Clustering.Police",
-          "adf.impl.module.algorithm.KMeansClustering");
+          "sample_team.module.algorithm.KMeansClustering");
     }
     registerModule(this.clustering);
     registerModule(this.pathPlanning);
