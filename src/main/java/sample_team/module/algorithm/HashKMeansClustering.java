@@ -34,7 +34,7 @@ import rescuecore2.worldmodel.EntityID;
 import adf.core.debug.DefaultLogger;
 import org.apache.log4j.Logger;
 
-public class KMeansClustering extends StaticClustering {
+public class HashKMeansClustering extends StaticClustering {
 
   private static final String KEY_CLUSTER_SIZE = "clustering.size";
   private static final String KEY_CLUSTER_CENTER = "clustering.centers";
@@ -58,16 +58,24 @@ public class KMeansClustering extends StaticClustering {
   private boolean assignAgentsFlag;
 
   private Map<EntityID, Set<EntityID>> shortestPathGraph;
+  
+  // 最適化用のキャッシュとマップ
+  private Map<EntityID, Integer> entityToClusterMap;
+  private Map<StandardEntity, Integer> centerToIndexMap;
+  private Map<String, Double> distanceCache;
+  private Map<String, List<EntityID>> pathCache;
 
-  public KMeansClustering(AgentInfo ai, WorldInfo wi, ScenarioInfo si, ModuleManager moduleManager, DevelopData developData) {
+  public HashKMeansClustering(AgentInfo ai, WorldInfo wi, ScenarioInfo si, ModuleManager moduleManager, DevelopData developData) {
     super(ai, wi, si, moduleManager, developData);
+
     this.logger = DefaultLogger.getLogger(agentInfo.me());
+
     this.repeatPrecompute = developData.getInteger(
-        "adf.impl.module.algorithm.KMeansClustering.repeatPrecompute", 7);
+        "sample_team.module.algorithm.KMeansClustering.repeatPrecompute", 7);
     this.repeatPreparate = developData.getInteger(
-        "adf.impl.module.algorithm.KMeansClustering.repeatPreparate", 30);
+        "sample_team.module.algorithm.KMeansClustering.repeatPreparate", 30);
     this.clusterSize = developData.getInteger(
-        "adf.impl.module.algorithm.KMeansClustering.clusterSize", 5);
+        "sample_team.module.algorithm.KMeansClustering.clusterSize", 5);
     if (agentInfo.me().getStandardURN()
         .equals(StandardEntityURN.AMBULANCE_TEAM)) {
       this.clusterSize = scenarioInfo.getScenarioAgentsAt();
@@ -79,7 +87,7 @@ public class KMeansClustering extends StaticClustering {
       this.clusterSize = scenarioInfo.getScenarioAgentsPf();
     }
     this.assignAgentsFlag = developData.getBoolean(
-        "adf.impl.module.algorithm.KMeansClustering.assignAgentsFlag", true);
+        "sample_team.module.algorithm.KMeansClustering.assignAgentsFlag", true);
     this.clusterEntityIDsList = new ArrayList<>();
     this.centerIDs = new ArrayList<>();
     this.clusterEntitiesList = new HashMap<>();
@@ -89,6 +97,12 @@ public class KMeansClustering extends StaticClustering {
         StandardEntityURN.REFUGE, StandardEntityURN.GAS_STATION,
         StandardEntityURN.AMBULANCE_CENTRE, StandardEntityURN.FIRE_STATION,
         StandardEntityURN.POLICE_OFFICE);
+    
+    // 最適化用のデータ構造を初期化
+    this.entityToClusterMap = new HashMap<>();
+    this.centerToIndexMap = new HashMap<>();
+    this.distanceCache = new HashMap<>();
+    this.pathCache = new HashMap<>();
   }
 
 
@@ -100,6 +114,9 @@ public class KMeansClustering extends StaticClustering {
     }
     this.centerList.clear();
     this.clusterEntitiesList.clear();
+    this.centerToIndexMap.clear();
+    this.distanceCache.clear();
+    this.pathCache.clear();
     return this;
   }
 
@@ -121,11 +138,24 @@ public class KMeansClustering extends StaticClustering {
     }
     precomputeData.setBoolean(KEY_ASSIGN_AGENT, this.assignAgentsFlag);
 
-    //debug
+    // --- ★ クラスタリング結果を標準出力に出す ---
+    System.out.println("=== KMeansClustering Result ===");
+    System.out.println("Cluster count: " + this.getClusterNumber());
+    for (int i = 0; i < this.getClusterNumber(); i++) {
+        Collection<EntityID> clusterEntities = this.getClusterEntityIDs(i);
+        System.out.println(
+            "[DEBUG] Cluster " + (i + 1)
+            + " | Size: " + clusterEntities.size()
+            + " | Entities: " + clusterEntities
+        );
+    }
+    System.out.println("===============================");
+
     for(int i = 1; i < this.getClusterNumber() + 1; i++) {
         Collection<EntityID> myClusterEntities = this.getClusterEntityIDs(i-1);
         logger.debug("cluster="+i+", EntityID="+myClusterEntities.toString());
     }
+
     return this;
   }
 
@@ -147,6 +177,10 @@ public class KMeansClustering extends StaticClustering {
           precomputeData.getEntityIDList(KEY_CLUSTER_ENTITY + i));
     }
     this.assignAgentsFlag = precomputeData.getBoolean(KEY_ASSIGN_AGENT);
+    
+    // 最適化用マップを更新
+    this.updateOptimizationMaps();
+    
     return this;
   }
 
@@ -178,8 +212,16 @@ public class KMeansClustering extends StaticClustering {
 
   @Override
   public int getClusterIndex(EntityID id) {
+    // 最適化: O(1)でクラスタインデックスを取得
+    Integer clusterIndex = this.entityToClusterMap.get(id);
+    if (clusterIndex != null) {
+      return clusterIndex;
+    }
+    
+    // フォールバック: マップが更新されていない場合
     for (int i = 0; i < this.clusterSize; i++) {
       if (this.clusterEntityIDsList.get(i).contains(id)) {
+        this.entityToClusterMap.put(id, i);
         return i;
       }
     }
@@ -229,15 +271,22 @@ public class KMeansClustering extends StaticClustering {
     }
     System.out.println("[" + this.getClass().getSimpleName() + "] Cluster : "
         + this.clusterSize);
-    // init center
+    
+    // init center - 最適化: Set使用で重複チェックを高速化
+    Set<StandardEntity> usedCenters = new HashSet<>();
     for (int index = 0; index < this.clusterSize; index++) {
       StandardEntity centerEntity;
       do {
         centerEntity = entityList
             .get(Math.abs(random.nextInt()) % entityList.size());
-      } while (this.centerList.contains(centerEntity));
+      } while (usedCenters.contains(centerEntity));
       this.centerList.set(index, centerEntity);
+      usedCenters.add(centerEntity);
     }
+    
+    // centerToIndexMapを構築
+    this.updateCenterToIndexMap();
+    
     // calc center
     for (int i = 0; i < repeat; i++) {
       this.clusterEntitiesList.clear();
@@ -247,29 +296,47 @@ public class KMeansClustering extends StaticClustering {
       for (StandardEntity entity : entityList) {
         StandardEntity tmp = this.getNearEntityByLine(this.worldInfo,
             this.centerList, entity);
-        this.clusterEntitiesList.get(this.centerList.indexOf(tmp)).add(entity);
+        Integer clusterIndex = this.centerToIndexMap.get(tmp);
+        if (clusterIndex != null) {
+          this.clusterEntitiesList.get(clusterIndex).add(entity);
+        }
       }
+      
+      boolean centersChanged = false;
       for (int index = 0; index < this.clusterSize; index++) {
+        List<StandardEntity> clusterEntities = this.clusterEntitiesList.get(index);
+        if (clusterEntities.isEmpty()) continue;
+        
         int sumX = 0, sumY = 0;
-        for (StandardEntity entity : this.clusterEntitiesList.get(index)) {
+        for (StandardEntity entity : clusterEntities) {
           Pair<Integer, Integer> location = this.worldInfo.getLocation(entity);
           sumX += location.first();
           sumY += location.second();
         }
-        int centerX = sumX / this.clusterEntitiesList.get(index).size();
-        int centerY = sumY / this.clusterEntitiesList.get(index).size();
+        int centerX = sumX / clusterEntities.size();
+        int centerY = sumY / clusterEntities.size();
         StandardEntity center = this.getNearEntityByLine(this.worldInfo,
-            this.clusterEntitiesList.get(index), centerX, centerY);
+            clusterEntities, centerX, centerY);
+        
+        StandardEntity newCenter = center;
         if (center instanceof Area) {
-          this.centerList.set(index, center);
+          newCenter = center;
         } else if (center instanceof Human) {
-          this.centerList.set(index,
-              this.worldInfo.getEntity(((Human) center).getPosition()));
+          newCenter = this.worldInfo.getEntity(((Human) center).getPosition());
         } else if (center instanceof Blockade) {
-          this.centerList.set(index,
-              this.worldInfo.getEntity(((Blockade) center).getPosition()));
+          newCenter = this.worldInfo.getEntity(((Blockade) center).getPosition());
+        }
+        
+        if (!newCenter.equals(this.centerList.get(index))) {
+          this.centerList.set(index, newCenter);
+          centersChanged = true;
         }
       }
+      
+      if (centersChanged) {
+        this.updateCenterToIndexMap();
+      }
+      
       if (scenarioInfo.isDebugMode()) {
         System.out.print("*");
       }
@@ -287,7 +354,10 @@ public class KMeansClustering extends StaticClustering {
     for (StandardEntity entity : entityList) {
       StandardEntity tmp = this.getNearEntityByLine(this.worldInfo,
           this.centerList, entity);
-      this.clusterEntitiesList.get(this.centerList.indexOf(tmp)).add(entity);
+      Integer clusterIndex = this.centerToIndexMap.get(tmp);
+      if (clusterIndex != null) {
+        this.clusterEntitiesList.get(clusterIndex).add(entity);
+      }
     }
 
     // this.clusterEntitiesList.sort(comparing(List::size, reverseOrder()));
@@ -317,6 +387,9 @@ public class KMeansClustering extends StaticClustering {
       }
       this.clusterEntityIDsList.add(index, list);
     }
+    
+    // 最適化用マップを更新
+    this.updateOptimizationMaps();
   }
 
 
@@ -331,14 +404,22 @@ public class KMeansClustering extends StaticClustering {
       this.clusterEntitiesList.put(index, new ArrayList<>());
       this.centerList.add(index, entityList.get(0));
     }
+    
+    // init center - 最適化: Set使用で重複チェックを高速化
+    Set<StandardEntity> usedCenters = new HashSet<>();
     for (int index = 0; index < this.clusterSize; index++) {
       StandardEntity centerEntity;
       do {
         centerEntity = entityList
             .get(Math.abs(random.nextInt()) % entityList.size());
-      } while (this.centerList.contains(centerEntity));
+      } while (usedCenters.contains(centerEntity));
       this.centerList.set(index, centerEntity);
+      usedCenters.add(centerEntity);
     }
+    
+    // centerToIndexMapを構築
+    this.updateCenterToIndexMap();
+    
     for (int i = 0; i < repeat; i++) {
       this.clusterEntitiesList.clear();
       for (int index = 0; index < this.clusterSize; index++) {
@@ -347,32 +428,50 @@ public class KMeansClustering extends StaticClustering {
       for (StandardEntity entity : entityList) {
         StandardEntity tmp = this.getNearEntity(this.worldInfo, this.centerList,
             entity);
-        this.clusterEntitiesList.get(this.centerList.indexOf(tmp)).add(entity);
+        Integer clusterIndex = this.centerToIndexMap.get(tmp);
+        if (clusterIndex != null) {
+          this.clusterEntitiesList.get(clusterIndex).add(entity);
+        }
       }
+      
+      boolean centersChanged = false;
       for (int index = 0; index < this.clusterSize; index++) {
+        List<StandardEntity> clusterEntities = this.clusterEntitiesList.get(index);
+        if (clusterEntities.isEmpty()) continue;
+        
         int sumX = 0, sumY = 0;
-        for (StandardEntity entity : this.clusterEntitiesList.get(index)) {
+        for (StandardEntity entity : clusterEntities) {
           Pair<Integer, Integer> location = this.worldInfo.getLocation(entity);
           sumX += location.first();
           sumY += location.second();
         }
-        int centerX = sumX / clusterEntitiesList.get(index).size();
-        int centerY = sumY / clusterEntitiesList.get(index).size();
+        int centerX = sumX / clusterEntities.size();
+        int centerY = sumY / clusterEntities.size();
 
         // this.centerList.set(index, getNearEntity(this.worldInfo,
         // this.clusterEntitiesList.get(index), centerX, centerY));
         StandardEntity center = this.getNearEntity(this.worldInfo,
-            this.clusterEntitiesList.get(index), centerX, centerY);
+            clusterEntities, centerX, centerY);
+        
+        StandardEntity newCenter = center;
         if (center instanceof Area) {
-          this.centerList.set(index, center);
+          newCenter = center;
         } else if (center instanceof Human) {
-          this.centerList.set(index,
-              this.worldInfo.getEntity(((Human) center).getPosition()));
+          newCenter = this.worldInfo.getEntity(((Human) center).getPosition());
         } else if (center instanceof Blockade) {
-          this.centerList.set(index,
-              this.worldInfo.getEntity(((Blockade) center).getPosition()));
+          newCenter = this.worldInfo.getEntity(((Blockade) center).getPosition());
+        }
+        
+        if (!newCenter.equals(this.centerList.get(index))) {
+          this.centerList.set(index, newCenter);
+          centersChanged = true;
         }
       }
+      
+      if (centersChanged) {
+        this.updateCenterToIndexMap();
+      }
+      
       if (scenarioInfo.isDebugMode()) {
         System.out.print("*");
       }
@@ -389,7 +488,10 @@ public class KMeansClustering extends StaticClustering {
     for (StandardEntity entity : entityList) {
       StandardEntity tmp = this.getNearEntity(this.worldInfo, this.centerList,
           entity);
-      this.clusterEntitiesList.get(this.centerList.indexOf(tmp)).add(entity);
+      Integer clusterIndex = this.centerToIndexMap.get(tmp);
+      if (clusterIndex != null) {
+        this.clusterEntitiesList.get(clusterIndex).add(entity);
+      }
     }
     // this.clusterEntitiesList.sort(comparing(List::size, reverseOrder()));
     if (this.assignAgentsFlag) {
@@ -416,6 +518,9 @@ public class KMeansClustering extends StaticClustering {
       }
       this.clusterEntityIDsList.add(index, list);
     }
+    
+    // 最適化用マップを更新
+    this.updateOptimizationMaps();
   }
 
 
@@ -549,10 +654,24 @@ public class KMeansClustering extends StaticClustering {
 
   private StandardEntity comparePathDistance(WorldInfo worldInfo,
       StandardEntity target, StandardEntity first, StandardEntity second) {
-    double firstDistance = getPathDistance(worldInfo,
-        shortestPath(target.getID(), first.getID()));
-    double secondDistance = getPathDistance(worldInfo,
-        shortestPath(target.getID(), second.getID()));
+    // キャッシュキーを生成
+    String firstKey = target.getID() + "-" + first.getID();
+    String secondKey = target.getID() + "-" + second.getID();
+    
+    Double firstDistance = this.distanceCache.get(firstKey);
+    if (firstDistance == null) {
+      firstDistance = getPathDistance(worldInfo,
+          shortestPath(target.getID(), first.getID()));
+      this.distanceCache.put(firstKey, firstDistance);
+    }
+    
+    Double secondDistance = this.distanceCache.get(secondKey);
+    if (secondDistance == null) {
+      secondDistance = getPathDistance(worldInfo,
+          shortestPath(target.getID(), second.getID()));
+      this.distanceCache.put(secondKey, secondDistance);
+    }
+    
     return (firstDistance < secondDistance ? first : second);
   }
 
@@ -614,6 +733,13 @@ public class KMeansClustering extends StaticClustering {
 
   private List<EntityID> shortestPath(EntityID start,
       Collection<EntityID> goals) {
+    // キャッシュキーを生成（start + goalsのハッシュ）
+    String cacheKey = start.toString() + "-" + goals.hashCode();
+    List<EntityID> cachedPath = this.pathCache.get(cacheKey);
+    if (cachedPath != null) {
+      return cachedPath;
+    }
+    
     List<EntityID> open = new LinkedList<>();
     Map<EntityID, EntityID> ancestors = new HashMap<>();
     open.add(start);
@@ -644,6 +770,7 @@ public class KMeansClustering extends StaticClustering {
     } while (!found && !open.isEmpty());
     if (!found) {
       // No path
+      this.pathCache.put(cacheKey, null);
       return null;
     }
     // Walk back from goal to start
@@ -656,11 +783,49 @@ public class KMeansClustering extends StaticClustering {
         throw new RuntimeException(
             "Found a node with no ancestor! Something is broken.");
     } while (current != start);
+    
+    // 結果をキャッシュに保存
+    this.pathCache.put(cacheKey, path);
     return path;
   }
 
 
   private boolean isGoal(EntityID e, Collection<EntityID> test) {
     return test.contains(e);
+  }
+  
+  // 最適化用のヘルパーメソッド
+  
+  /**
+   * centerListからcenterToIndexMapを構築する
+   */
+  private void updateCenterToIndexMap() {
+    this.centerToIndexMap.clear();
+    for (int i = 0; i < this.centerList.size(); i++) {
+      this.centerToIndexMap.put(this.centerList.get(i), i);
+    }
+  }
+  
+  /**
+   * 全ての最適化用マップを更新する
+   */
+  private void updateOptimizationMaps() {
+    this.updateCenterToIndexMap();
+    this.updateEntityToClusterMap();
+  }
+  
+  /**
+   * entityToClusterMapを構築する
+   */
+  private void updateEntityToClusterMap() {
+    this.entityToClusterMap.clear();
+    for (int i = 0; i < this.clusterEntityIDsList.size(); i++) {
+      List<EntityID> entities = this.clusterEntityIDsList.get(i);
+      if (entities != null) {
+        for (EntityID entityID : entities) {
+          this.entityToClusterMap.put(entityID, i);
+        }
+      }
+    }
   }
 }
